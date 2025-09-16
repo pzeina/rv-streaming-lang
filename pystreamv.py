@@ -2,7 +2,7 @@ import ast
 import sys
 import types
 import inspect
-from typing import Any, Callable, List, Union, Dict, Optional
+from typing import Any, Callable, List, Dict, Optional
 
 class Formula:
     """
@@ -157,6 +157,33 @@ class FormulaCompiler:
         cls._formula_trees.clear()
         cls._current_formula_name = None
 
+class InputStream:
+    """
+    Represents a typed input stream for streaming logic.
+    """
+    def __init__(self, type: type, name: Optional[str] = None):
+        self.type = type
+        self.name = name
+        self.value = None
+    def __and__(self, other):
+        return Formula(ast.BoolOp(op=ast.And(), values=[self._to_ast(), other._to_ast()]))
+    def __or__(self, other):
+        return Formula(ast.BoolOp(op=ast.Or(), values=[self._to_ast(), other._to_ast()]))
+    def _to_ast(self):
+        return ast.Name(id=self.name or f"stream_{id(self)}", ctx=ast.Load())
+
+class State:
+    """
+    Represents a state in a state machine for streaming logic.
+    """
+    def __init__(self, root=False, enter=None, eval=None, exit=None):
+        self.root = root
+        self.enter = enter
+        self.eval = eval
+        self.exit = exit
+    def __repr__(self):
+        return (f"State(root={self.root}, enter={self.enter}, eval={self.eval}, exit={self.exit})")
+
         
 def _lambda_to_ast(func: Callable) -> ast.AST:
     """
@@ -260,19 +287,94 @@ def since(formula1: Callable, formula2: Callable, interval: List[float]):
     # Compile and return the formula
     return compiler.compile(since_call)
 
-def create_biolanguage_module():
+
+def triggers_exists(formula1: Callable, formula2: Callable, interval: List[float]):
     """
-    Create a module with biolanguage functions
+    Create AST for 'triggers_exists' temporal logic operation
     """
-    module = types.ModuleType('biolanguage')
+    # Compile the formulas
+    compiler = FormulaCompiler()
+    formula1_ast = compiler.compile(formula1)
+    formula2_ast = compiler.compile(formula2)
+    
+    # Convert interval to AST list
+    interval_ast = ast.List(
+        elts=[
+            ast.Constant(value=interval[0]), 
+            ast.Constant(value=interval[1])
+        ], 
+        ctx=ast.Load()
+    )
+
+    # Create the triggers_exists call AST
+    triggers_call = ast.Call(
+        func=ast.Name(id='triggers_exists', ctx=ast.Load()),
+        args=[
+            # Extract AST nodes to handle nested Formulas
+            formula1_ast.ast_node if isinstance(formula1_ast, Formula) else formula1_ast,
+            formula2_ast.ast_node if isinstance(formula2_ast, Formula) else formula2_ast,
+            interval_ast
+        ],
+        keywords=[]
+    )
+    
+    # Compile and return the formula
+    return compiler.compile(triggers_call)
+
+
+
+def triggers_forall(formula1: Callable, formula2: Callable, interval: List[float]):
+    """
+    Create AST for 'triggers_exists' temporal logic operation
+    """
+    # Compile the formulas
+    compiler = FormulaCompiler()
+    formula1_ast = compiler.compile(formula1)
+    formula2_ast = compiler.compile(formula2)
+    
+    # Convert interval to AST list
+    interval_ast = ast.List(
+        elts=[
+            ast.Constant(value=interval[0]), 
+            ast.Constant(value=interval[1])
+        ], 
+        ctx=ast.Load()
+    )
+
+    # Create the triggers_forall call AST
+    triggers_call = ast.Call(
+        func=ast.Name(id='triggers_forall', ctx=ast.Load()),
+        args=[
+            # Extract AST nodes to handle nested Formulas
+            formula1_ast.ast_node if isinstance(formula1_ast, Formula) else formula1_ast,
+            formula2_ast.ast_node if isinstance(formula2_ast, Formula) else formula2_ast,
+            interval_ast
+        ],
+        keywords=[]
+    )
+    
+    # Compile and return the formula
+    return compiler.compile(triggers_call)
+
+
+
+def create_pystreamv_module():
+    """
+    Create a module with pystreamv functions
+    """
+    module = types.ModuleType('pystreamv')
     
     # Add key functions
     module.__dict__['rolling_window'] = rolling_window
     module.__dict__['since'] = since
+    module.__dict__['triggers_exists'] = triggers_exists
+    module.__dict__['triggers_forall'] = triggers_forall
     module.__dict__['FormulaCompiler'] = FormulaCompiler
     module.__dict__['Formula'] = Formula
+    module.__dict__['InputStream'] = InputStream
+    module.__dict__['State'] = State
     
     return module
 
 # Create the module and add it to sys.modules
-sys.modules['biolanguage'] = create_biolanguage_module()
+sys.modules['pystreamv'] = create_pystreamv_module()

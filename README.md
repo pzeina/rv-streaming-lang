@@ -1,12 +1,12 @@
-# Biolanguage: A Temporal Logic Formula Library
+# pystreamv: A Temporal Logic Formula Library
 
 ## Content of the Directory
 - `README.md`: This file, providing an overview of the project
-- `biolanguage.py`: Core implementation of the temporal logic formula library
+- `pystreamv.py`: Core implementation of the temporal logic formula library
 - `usage_example.py`: Example script demonstrating library usage
 
 ## Project Overview
-Biolanguage is a Python library for creating and manipulating temporal logic formulas using Abstract Syntax Tree (AST) transformations.
+pystreamv is a Python library for creating and manipulating temporal logic formulas using Abstract Syntax Tree (AST) transformations.
 
 ## Technical Documentation
 
@@ -42,7 +42,7 @@ lambda2 = lambda x: x['other_value'] < 10
 complex_formula_1 = (lambda1 & lambda2) | (lambda1 & ~lambda2)
 
 complex_formula_2 = (
-    biolanguage.since(
+    pystreamv.since(
         lambda x: x['value'] > 2, 
         lambda x: x['rolling_avg'] > 5,
         [2, 31]
@@ -98,20 +98,20 @@ Remarks:
 
 ## Example Usage
 ```python
-import biolanguage
+import pystreamv
 
 # Simple formula
 formula1 = lambda x: x['value'] > 5
 
 # Complex temporal logic formula
-formula2 = biolanguage.since(
+formula2 = pystreamv.since(
     lambda x: x['value'] > 2, 
     lambda x: x['value'] > 3, 
     [2, 31]
 )
 
 # Rolling window calculation
-formula3 = biolanguage.rolling_window(
+formula3 = pystreamv.rolling_window(
     [5, 25], 
     lambda x: x['value'], 
     lambda y: sum(y) / len(y)
