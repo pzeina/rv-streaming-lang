@@ -1,380 +1,387 @@
-import ast
+from __future__ import annotations
+
 import sys
-import types
-import inspect
-from typing import Any, Callable, List, Dict, Optional
+from typing import Any, Dict, Type, List, Optional, Union
+import ast
+
+
+# --- Units / Period / Scheduling -------------------------------------------
+class Unit:
+    def __init__(self, name: str, to_seconds: float = 1.0):
+        self.name = name
+        self.to_seconds = to_seconds
+
+    def __rmul__(self, value: Union[int, float]) -> 'Period':
+        return Period(float(value), self)
+
+    def __repr__(self) -> str:
+        return f"Unit({self.name})"
+
+
+class Period:
+    def __init__(self, value: float, unit: Unit):
+        self.value = float(value)
+        self.unit = unit
+
+    def to_seconds(self) -> float:
+        return self.value * self.unit.to_seconds
+
+    def __repr__(self) -> str:
+        return f"Period({self.value}{self.unit.name})"
+
+
+class ScheduledFormula:
+    def __init__(self, formula: Formula, period: Period):
+        self.formula = formula
+        self.period = period
+
+    def __repr__(self) -> str:
+        return f"ScheduledFormula({self.formula}, every={self.period})"
+
+
+# Common time units
+s = Unit('s', 1.0)
+ms = Unit('ms', 0.001)
+m = Unit('m', 60.0)
+h = Unit('h', 3600.0)
 
 class Formula:
-    """
-    Wrapper class to enable custom logical operations between formulas
-    """
-    def __init__(self, ast_node):
-        # Check that the ast_node is an AST node
-        if not isinstance(ast_node, ast.AST):
-            raise ValueError("Invalid AST node provided")
-        self.ast_node = ast_node
-        self.compiler = FormulaCompiler()
-        
-    def __and__(self, other):
-        """
-        Overload the & operator to create an AND logical operation
-        """
-        # Extract AST nodes, handling both Formula and other types
-        left_node = self.ast_node.ast_node if isinstance(self.ast_node, Formula) else self.ast_node
-        right_node = other.ast_node if isinstance(other, Formula) else other
-        
-        # Create an AST for the AND operation
-        and_call = ast.BoolOp(
-            op=ast.And(),
-            values=[left_node, right_node]
-        )
-        
-        # Compile and return a new Formula
-        return self.compiler.compile(and_call)
+    """Base class for formula AST nodes"""
+    def __init__(self, op: str, *args: Any):
+        self.op = op
+        self.args = args
     
-    def __or__(self, other):
-        """
-        Overload the | operator to create an OR logical operation
-        """
-        # Extract AST nodes, handling both Formula and other types
-        left_node = self.ast_node.ast_node if isinstance(self.ast_node, Formula) else self.ast_node
-        right_node = other.ast_node if isinstance(other, Formula) else other
-        
-        # Create an AST for the OR operation
-        or_call = ast.BoolOp(
-            op=ast.Or(),
-            values=[left_node, right_node]
-        )
-        
-        # Compile and return a new Formula
-        return self.compiler.compile(or_call)
+    def __lt__(self, other: Any):
+        return BinaryOp('<', self, other)
     
-    def __invert__(self):
-        """
-        Overload the ~ operator to create a NOT operation
-        """
-        # Extract AST node
-        operand = self.ast_node.ast_node if isinstance(self.ast_node, Formula) else self.ast_node
-        
-        # Create an AST for the NOT operation
-        not_call = ast.UnaryOp(
-            op=ast.Not(),
-            operand=operand
-        )
-        
-        # Compile and return a new Formula
-        return self.compiler.compile(not_call)
+    def __gt__(self, other: Any):
+        return BinaryOp('>', self, other)
+    
+    def __sub__(self, other: Any):
+        return BinaryOp('-', self, other)
+    
+    def __getitem__(self, index: int):
+        return IndexOp(self, index)
+    
+    def every(self, period: Union[Period, Any]):
+        return TemporalOp('every', self, period)
+    
+    def last(self):
+        return TemporalOp('last', self)
 
-class FormulaCompiler:
-    """
-    Enhanced singleton class to manage formula compilation and AST storage
-    with full formula tree tracking
-    """
-    _instance = None
-    _formula_trees: Dict[str, ast.AST] = {}
-    _current_formula_name: Optional[str] = None
+    def to_ast(self) -> 'FormulaAST':
+        """Convert this formula to an AST node"""
+        return FormulaAST(self)
+    
+    def compile(self) -> 'FunctionTerm':
+        """Compile this formula to a logicsponge circuit"""
+        ast_node = self.to_ast()
+        return ast_node.compile_to_circuit()
 
-    def __new__(cls):
-        if not cls._instance:
-            cls._instance = super(FormulaCompiler, cls).__new__(cls)
-        return cls._instance
+class BinaryOp(Formula):
+    def __init__(self, op: str, left: Any, right: Any):
+        super().__init__(op, left, right)
+        self.left = left
+        self.right = right
 
-    @classmethod
-    def compile(cls, formula: Any, name: Optional[str] = None) -> Formula:
-        """
-        Compile a formula and store its AST
-        
-        :param formula: Formula to compile (can be lambda, AST, or previous formula reference)
-        :param name: Optional name to store the formula under
-        :return: Compiled Formula wrapper
-        """
-        # If no name provided, generate a unique name
-        if name is None:
-            name = f"formula_autogen_{len(cls._formula_trees) + 1}"
-        
-        # Handle different input types
-        if isinstance(formula, Formula):
-            # If already a Formula, extract its AST
-            compiled_ast = formula.ast_node
-        elif isinstance(formula, ast.AST):
-            # If already an AST, store directly
-            compiled_ast = formula
-        elif callable(formula):
-            # If a lambda, convert to AST
-            compiled_ast = _lambda_to_ast(formula)
-        elif isinstance(formula, str) and formula in cls._formula_trees:
-            # If a string referencing a previously compiled formula
-            compiled_ast = cls._formula_trees[formula]
-        else:
-            # For complex nested formulas or references
-            raise ValueError(f"Cannot compile formula of type {type(formula)}")
-        
-        # Store the AST
-        cls._formula_trees[name] = compiled_ast
-        cls._current_formula_name = name
-        
-        # Return a Formula wrapper
-        return Formula(compiled_ast)
+class IndexOp(Formula):
+    def __init__(self, target: Any, index: Any):
+        super().__init__('index', target, index)
+        self.target = target
+        self.index = index
 
-    @classmethod
-    def get_formula_tree(cls, name: Optional[str] = None) -> ast.AST:
-        """
-        Retrieve a formula's AST, with optional resolution of nested references
-        
-        :param name: Name of the formula to retrieve (defaults to most recently compiled)
-        :return: Complete AST for the formula
-        """
-        if name is None:
-            name = cls._current_formula_name
-        
-        if name not in cls._formula_trees:
-            raise KeyError(f"No formula found with name: {name}")
-        
-        # Unwrap Formula if necessary
-        formula_ast = cls._formula_trees[name]
-        return formula_ast.ast_node if isinstance(formula_ast, Formula) else formula_ast
+class TemporalOp(Formula):
+    def __init__(self, op: str, target: Any, *args: Any):
+        # Only store extra args (e.g., period) in Formula.args, not the target
+        super().__init__(op, *args)
+        self.target = target
 
-    @classmethod
-    def get_all_formulas(cls) -> Dict[str, ast.AST]:
-        """
-        Retrieve all stored formula trees
-        
-        :return: Dictionary of all stored formula ASTs
-        """
-        # Ensure we return the raw AST nodes, not the Formula wrappers
-        return {
-            name: (
-                formula_ast.ast_node if isinstance(formula_ast, Formula) 
-                else formula_ast
-            ) for name, formula_ast in cls._formula_trees.items()
-        }
-
-    @classmethod
-    def clear_formulas(cls):
-        """
-        Clear all stored formula trees
-        """
-        cls._formula_trees.clear()
-        cls._current_formula_name = None
+class FieldAccess(Formula):
+    def __init__(self, stream: 'InputStream', field: str):
+        super().__init__('field_access', stream, field)
+        self.stream = stream
+        self.field = field
 
 class InputStream:
-    """
-    Represents a typed input stream for streaming logic.
-    """
-    def __init__(self, type: type, name: Optional[str] = None):
+    def __init__(self, type: Type[Any]):
         self.type = type
-        self.name = name
-        self.value = None
-    def __and__(self, other):
-        return Formula(ast.BoolOp(op=ast.And(), values=[self._to_ast(), other._to_ast()]))
-    def __or__(self, other):
-        return Formula(ast.BoolOp(op=ast.Or(), values=[self._to_ast(), other._to_ast()]))
-    def _to_ast(self):
-        return ast.Name(id=self.name or f"stream_{id(self)}", ctx=ast.Load())
+        self._fields: Dict[str, Type[Any]] = {}
+        
+        # Handle both class annotations and dict-style type definitions
+        if hasattr(type, '__annotations__'):
+            for field_name, field_type in type.__annotations__.items():
+                self._fields[field_name] = field_type
+        elif isinstance(type, dict):
+            # Handle dict-style type definitions from demo
+            for field_name, field_type in type.items():
+                self._fields[field_name] = field_type
+        elif hasattr(type, '__dict__'):
+            # Handle type() created classes
+            for field_name, field_type in type.__dict__.items():
+                if not field_name.startswith('_'):
+                    self._fields[field_name] = field_type
+    
+    def __getattr__(self, name: str):
+        if name in self._fields:
+            return FieldAccess(self, name)
+        raise AttributeError(f"Stream has no field '{name}'")
 
-class State:
-    """
-    Represents a state in a state machine for streaming logic.
-    """
-    def __init__(self, root=False, enter=None, eval=None, exit=None):
-        self.root = root
-        self.enter = enter
-        self.eval = eval
-        self.exit = exit
+class TimestampedStream(InputStream):
+    def __init__(self, original_stream: InputStream):
+        super().__init__(original_stream.type)
+        self._original = original_stream
+        # Copy all fields from original stream
+        self._fields.update(original_stream._fields)
+        # Add time field
+        self._fields['time'] = float
+        self.time = FieldAccess(self, 'time')
+
+class GlobalTime:
+    def __init__(self):
+        self.time = Formula('global_time')
+
+class MultiplexFormula(Formula):
+    def __init__(self, output: Any, id_from: Any, eos_from: Any):
+        super().__init__('multiplex', output, id_from, eos_from)
+        self.output = output
+        self.id_from = id_from
+        self.eos_from = eos_from
+
+class AlwaysOperator(Formula):
+    def __init__(self, duration: Union[Period, Any], condition: Any):
+        super().__init__('always', duration, condition)
+        self.duration = duration
+        self.condition = condition
+
+# DSL functions
+def timestamp(stream: InputStream) -> TimestampedStream:
+    return TimestampedStream(stream)
+
+def H(duration: Union[Period, Any], condition: Any) -> AlwaysOperator:
+    return AlwaysOperator(duration, condition)
+
+def multiplex_id(output: Any, id_from: Any, eos_from: Any) -> MultiplexFormula:
+    return MultiplexFormula(output, id_from, eos_from)
+
+class FormulaAST:
+    """AST node that can be compiled to logicsponge circuits"""
+    def __init__(self, formula: Formula, children: Optional[List['FormulaAST']] = None):
+        self.formula = formula
+        self.children = children or []
+    
+    def add_child(self, child: 'FormulaAST'):
+        self.children.append(child)
+    
+    def compile_to_circuit(self) -> 'FunctionTerm':
+        """Compile this AST node to a logicsponge FunctionTerm"""
+        compiler = CircuitCompiler()
+        return compiler.visit(self)
+
+class CircuitCompiler:
+    """Compiles Formula AST to logicsponge FunctionTerm circuits"""
+    
+    def visit(self, node: FormulaAST) -> 'FunctionTerm':
+        # Normalize operator symbols to valid visitor method suffixes
+        op = node.formula.op
+        op_key = {'>': 'gt', '<': 'lt', '-': 'sub'}.get(op, op)
+        method_name = f'visit_{op_key}'
+        visitor = getattr(self, method_name, self.generic_visit)
+        return visitor(node)
+    
+    def generic_visit(self, node: FormulaAST) -> 'FunctionTerm':
+        # For unknown operations, create a generic function term
+        args = [self.visit(child) for child in node.children]
+        return FunctionTerm(node.formula.op, args)
+    
+    def visit_field_access(self, node: FormulaAST) -> 'FunctionTerm':
+        field_access = node.formula
+        stream_term = SourceTerm(field_access.stream.type, field_access.field)
+        return stream_term
+    
+    def visit_binary_op(self, node: FormulaAST) -> 'FunctionTerm':
+        binary_op = node.formula
+        left_term = self._compile_operand(binary_op.left)
+        right_term = self._compile_operand(binary_op.right)
+        return FunctionTerm(f'op_{binary_op.op}', [left_term, right_term])
+    
+    def visit_lt(self, node: FormulaAST) -> 'FunctionTerm':
+        binary_op = node.formula
+        left_term = self._compile_operand(binary_op.left)
+        right_term = self._compile_operand(binary_op.right)
+        return FunctionTerm('lt', [left_term, right_term])
+    
+    def visit_gt(self, node: FormulaAST) -> 'FunctionTerm':
+        binary_op = node.formula
+        left_term = self._compile_operand(binary_op.left)
+        right_term = self._compile_operand(binary_op.right)
+        return FunctionTerm('gt', [left_term, right_term])
+    
+    def visit_sub(self, node: FormulaAST) -> 'FunctionTerm':
+        binary_op = node.formula
+        left_term = self._compile_operand(binary_op.left)
+        right_term = self._compile_operand(binary_op.right)
+        return FunctionTerm('sub', [left_term, right_term])
+    
+    def visit_index(self, node: FormulaAST) -> 'FunctionTerm':
+        index_op = node.formula
+        target_term = self._compile_operand(index_op.target)
+        index_term = self._compile_operand(index_op.index)
+        return FunctionTerm('index', [target_term, index_term])
+    
+    def visit_every(self, node: FormulaAST) -> 'FunctionTerm':
+        temporal_op = node.formula
+        target_term = self._compile_operand(temporal_op.target)
+        # args[0] is the period (no duplication of target anymore)
+        period_term = self._compile_operand(temporal_op.args[0])
+        return FunctionTerm('every', [target_term, period_term])
+    
+    def visit_last(self, node: FormulaAST) -> 'FunctionTerm':
+        temporal_op = node.formula
+        target_term = self._compile_operand(temporal_op.target)
+        return FunctionTerm('last', [target_term])
+    
+    def visit_always(self, node: FormulaAST) -> 'FunctionTerm':
+        always_op = node.formula
+        duration_term = self._compile_operand(always_op.duration)
+        condition_term = self._compile_operand(always_op.condition)
+        return FunctionTerm('always', [duration_term, condition_term])
+    
+    def visit_multiplex(self, node: FormulaAST) -> 'FunctionTerm':
+        multiplex_op = node.formula
+        output_term = self._compile_operand(multiplex_op.output)
+        id_term = self._compile_operand(multiplex_op.id_from)
+        eos_term = self._compile_operand(multiplex_op.eos_from)
+        return FunctionTerm('multiplex', [output_term, id_term, eos_term])
+    
+    def visit_global_time(self, node: FormulaAST) -> 'FunctionTerm':
+        return FunctionTerm('global_time', [])
+    
+    def visit_second(self, node: FormulaAST) -> 'FunctionTerm':
+        return FunctionTerm('time_unit_second', [])
+    
+    def _compile_operand(self, operand: Any) -> 'FunctionTerm':
+        """Compile an operand which can be a Formula, Period, or standard Python value"""
+        if isinstance(operand, Formula):
+            ast_node = self._formula_to_ast(operand)
+            return self.visit(ast_node)
+        elif isinstance(operand, Period):
+            return PeriodTerm(operand)
+        elif isinstance(operand, Unit):
+            return UnitTerm(operand)
+        elif isinstance(operand, (int, float, str)):
+            return ConstantTerm(operand)
+        else:
+            # For external functions like geopy.distance, create a function call term
+            return ExternalFunctionTerm(operand)
+    
+    def _formula_to_ast(self, formula: Formula) -> FormulaAST:
+        """Convert a Formula to FormulaAST for compilation"""
+        ast_node = FormulaAST(formula)
+        # Don't add children here - let the visit methods handle operands directly
+        return ast_node
+
+# Logicsponge circuit classes (simplified interface)
+class FunctionTerm:
+    """Represents a function term in logicsponge circuits"""
+    def __init__(self, function_name: str, args: List['FunctionTerm']):
+        self.function_name = function_name
+        self.args = args
+    
     def __repr__(self):
-        return (f"State(root={self.root}, enter={self.enter}, eval={self.eval}, exit={self.exit})")
+        args_str = ', '.join(str(arg) for arg in self.args)
+        return f"{self.function_name}({args_str})"
 
-        
-def _lambda_to_ast(func: Callable) -> ast.AST:
-    """
-    Convert a lambda function to an AST node
+class SourceTerm(FunctionTerm):
+    """Represents a source stream in logicsponge circuits"""
+    def __init__(self, stream_type: Type[Any], field: str):
+        super().__init__('source', [])
+        self.stream_type = stream_type
+        self.field = field
     
-    :param func: Lambda function to convert
-    :return: AST representation of the lambda
-    """
-    try:
-        # Get the source code of the lambda
-        src = inspect.getsource(func).strip()
-        
-        # Parse the source and extract the lambda node
-        parsed = ast.parse(src)
-        
-        # Find the lambda node
-        for node in ast.walk(parsed):
-            if isinstance(node, ast.Lambda):
-                return node
-        
-        raise ValueError("Could not extract lambda from source")
+    def __repr__(self):
+        return f"Source({self.stream_type.__name__}.{self.field})"
+
+class ConstantTerm(FunctionTerm):
+    """Represents a constant value in logicsponge circuits"""
+    def __init__(self, value: Any):
+        super().__init__('const', [])
+        self.value = value
     
-    except Exception:
-        # Fallback for more complex scenarios
-        return ast.Lambda(
-            args=ast.arguments(
-                posonlyargs=[],
-                args=[ast.arg(arg='x')],
-                vararg=None,
-                kwonlyargs=[],
-                kw_defaults=[],
-                kwarg=None,
-                defaults=[]
-            ),
-            body=ast.Constant(value=func)
-        )
+    def __repr__(self):
+        return f"Const({self.value})"
 
-def rolling_window(interval: List[float], map_func: Callable, reduce_func: Callable):
-    """
-    Create AST for rolling window operation
-    """
-    # Compile the functions
-    compiler = FormulaCompiler()
-    map_lambda_ast = compiler.compile(map_func)
-    reduce_lambda_ast = compiler.compile(reduce_func)
+class ExternalFunctionTerm(FunctionTerm):
+    """Represents external function calls in logicsponge circuits"""
+    def __init__(self, function: Any):
+        super().__init__('external', [])
+        self.function = function
     
-    # Convert interval to AST list
-    interval_ast = ast.List(
-        elts=[
-            ast.Constant(value=interval[0]), 
-            ast.Constant(value=interval[1])
-        ], 
-        ctx=ast.Load()
-    )
+    def __repr__(self):
+        return f"External({self.function})"
+
+class PeriodTerm(FunctionTerm):
+    """Represents a time period in logicsponge circuits"""
+    def __init__(self, period: Period):
+        super().__init__('period', [])
+        self.period = period
     
-    # Create the rolling_window call AST
-    rolling_call = ast.Call(
-        func=ast.Name(id='rolling_window', ctx=ast.Load()),
-        args=[
-            interval_ast, 
-            # Extract AST nodes to handle nested Formulas
-            map_lambda_ast.ast_node if isinstance(map_lambda_ast, Formula) else map_lambda_ast, #### Define function
-            reduce_lambda_ast.ast_node if isinstance(reduce_lambda_ast, Formula) else reduce_lambda_ast
-        ],
-        keywords=[]
-    )
+    def __repr__(self):
+        return f"Period({self.period.value}, {self.period.unit.name})"
+
+
+class UnitTerm(FunctionTerm):
+    """Represents a time unit in logicsponge circuits"""
+    def __init__(self, unit: Unit):
+        super().__init__('unit', [])
+        self.unit = unit
     
-    # Compile and return the formula
-    return compiler.compile(rolling_call)
+    def __repr__(self):
+        return f"Unit({self.unit.name})"
 
-def since(formula1: Callable, formula2: Callable, interval: List[float]):
-    """
-    Create AST for 'since' temporal logic operation
-    """
-    # Compile the formulas
-    compiler = FormulaCompiler()
-    formula1_ast = compiler.compile(formula1)
-    formula2_ast = compiler.compile(formula2)
-    
-    # Convert interval to AST list
-    interval_ast = ast.List(
-        elts=[
-            ast.Constant(value=interval[0]), 
-            ast.Constant(value=interval[1])
-        ], 
-        ctx=ast.Load()
-    )
-    
-    # Create the since call AST
-    since_call = ast.Call(
-        func=ast.Name(id='since', ctx=ast.Load()),
-        args=[
-            # Extract AST nodes to handle nested Formulas
-            formula1_ast.ast_node if isinstance(formula1_ast, Formula) else formula1_ast,
-            formula2_ast.ast_node if isinstance(formula2_ast, Formula) else formula2_ast,
-            interval_ast
-        ],
-        keywords=[]
-    )
-    
-    # Compile and return the formula
-    return compiler.compile(since_call)
+# Global time reference
+GLOBAL = GlobalTime()
 
+# DSL compilation function
+def compile_formula(formula: Formula) -> FunctionTerm:
+    """Compile a formula to logicsponge FunctionTerm circuit"""
+    return formula.compile()
 
-def triggers_exists(formula1: Callable, formula2: Callable, interval: List[float]):
-    """
-    Create AST for 'triggers_exists' temporal logic operation
-    """
-    # Compile the formulas
-    compiler = FormulaCompiler()
-    formula1_ast = compiler.compile(formula1)
-    formula2_ast = compiler.compile(formula2)
-    
-    # Convert interval to AST list
-    interval_ast = ast.List(
-        elts=[
-            ast.Constant(value=interval[0]), 
-            ast.Constant(value=interval[1])
-        ], 
-        ctx=ast.Load()
-    )
-
-    # Create the triggers_exists call AST
-    triggers_call = ast.Call(
-        func=ast.Name(id='triggers_exists', ctx=ast.Load()),
-        args=[
-            # Extract AST nodes to handle nested Formulas
-            formula1_ast.ast_node if isinstance(formula1_ast, Formula) else formula1_ast,
-            formula2_ast.ast_node if isinstance(formula2_ast, Formula) else formula2_ast,
-            interval_ast
-        ],
-        keywords=[]
-    )
-    
-    # Compile and return the formula
-    return compiler.compile(triggers_call)
-
-
-
-def triggers_forall(formula1: Callable, formula2: Callable, interval: List[float]):
-    """
-    Create AST for 'triggers_exists' temporal logic operation
-    """
-    # Compile the formulas
-    compiler = FormulaCompiler()
-    formula1_ast = compiler.compile(formula1)
-    formula2_ast = compiler.compile(formula2)
-    
-    # Convert interval to AST list
-    interval_ast = ast.List(
-        elts=[
-            ast.Constant(value=interval[0]), 
-            ast.Constant(value=interval[1])
-        ], 
-        ctx=ast.Load()
-    )
-
-    # Create the triggers_forall call AST
-    triggers_call = ast.Call(
-        func=ast.Name(id='triggers_forall', ctx=ast.Load()),
-        args=[
-            # Extract AST nodes to handle nested Formulas
-            formula1_ast.ast_node if isinstance(formula1_ast, Formula) else formula1_ast,
-            formula2_ast.ast_node if isinstance(formula2_ast, Formula) else formula2_ast,
-            interval_ast
-        ],
-        keywords=[]
-    )
-    
-    # Compile and return the formula
-    return compiler.compile(triggers_call)
-
-
-
-def create_pystreamv_module():
-    """
-    Create a module with pystreamv functions
-    """
+def create_module() -> Any:
+    """Create a module-like object with all classes and functions"""
+    import types
     module = types.ModuleType('pystreamv')
-    
-    # Add key functions
-    module.__dict__['rolling_window'] = rolling_window
-    module.__dict__['since'] = since
-    module.__dict__['triggers_exists'] = triggers_exists
-    module.__dict__['triggers_forall'] = triggers_forall
-    module.__dict__['FormulaCompiler'] = FormulaCompiler
-    module.__dict__['Formula'] = Formula
-    module.__dict__['InputStream'] = InputStream
-    module.__dict__['State'] = State
-    
+    module.__dict__["Unit"] = Unit
+    module.__dict__["Period"] = Period
+    module.__dict__["PeriodTerm"] = PeriodTerm
+    module.__dict__["ScheduledFormula"] = ScheduledFormula
+    module.__dict__["Formula"] = Formula
+    module.__dict__["FormulaAST"] = FormulaAST
+    module.__dict__["FunctionTerm"] = FunctionTerm
+    module.__dict__["InputStream"] = InputStream
+    module.__dict__["GLOBAL"] = GLOBAL
+    module.__dict__["s"] = s
+    module.__dict__["ms"] = ms
+    module.__dict__["m"] = m
+    module.__dict__["h"] = h
+    module.__dict__["timestamp"] = timestamp
+    module.__dict__["H"] = H
+    module.__dict__["multiplex_id"] = multiplex_id
+    module.__dict__["compile_formula"] = compile_formula
+    module.__dict__["SourceTerm"] = SourceTerm
+    module.__dict__["ConstantTerm"] = ConstantTerm
+    module.__dict__["ExternalFunctionTerm"] = ExternalFunctionTerm
+    module.__dict__["IndexOp"] = IndexOp
+    module.__dict__["BinaryOp"] = BinaryOp
+    module.__dict__["TemporalOp"] = TemporalOp
+    module.__dict__["FieldAccess"] = FieldAccess
+    module.__dict__["TimestampedStream"] = TimestampedStream
+    module.__dict__["MultiplexFormula"] = MultiplexFormula
+    module.__dict__["AlwaysOperator"] = AlwaysOperator
+    module.__dict__["FormulaAST"] = FormulaAST
+    module.__dict__["CircuitCompiler"] = CircuitCompiler
+    # Export UnitTerm so debug printer can use it
+    module.__dict__["UnitTerm"] = UnitTerm
     return module
 
-# Create the module and add it to sys.modules
-sys.modules['pystreamv'] = create_pystreamv_module()
+pystreamv = create_module()
+sys.modules['pystreamv'] = pystreamv

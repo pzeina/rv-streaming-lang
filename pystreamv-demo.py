@@ -1,48 +1,35 @@
+import geopy
 import pystreamv
 
-# add input stream declaration?
-intruder_lat = pystreamv.InputStream(type = float)
-intruder_lon = pystreamv.InputStream(type = float)
-lat = pystreamv.InputStream(type = float)
-lon = pystreamv.InputStream(type = float)
+# Placeholders for input streams (as logicsponge=core SourceTerm)
+self = pystreamv.InputStream(type = type('SelfType', (), {
+    '__annotations__': {
+        'lat': float,  # | None
+        'lon': float,
+    }
+}))
+intruder = pystreamv.InputStream(type = type('IntruderType', (), {
+    '__annotations__': {
+        'lat': float,  # | None
+        'lon': float,
+        'id': int
+    }
+}))
 
-# the async semantics needs to be addressed in logicsponge-core, by adding 'hold' and 'defaults' modifiers
-def distance(p1, p2):
-    x1, y1 = p1.hold() if p1 else (0.0, 0.0)
-    x2, y2 = p2.hold() if p2 else (0.0, 0.0)
-    return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
+intruder = pystreamv.timestamp(intruder)
 
-distance_async = distance((lat, lon),(intruder_lat, intruder_lon))
+# schedule evaluation every 10 seconds: compare intruder time to GLOBAL
+# use .last() to get the last data item from the stream, then attach a Period with .every()
+stale = ((intruder.time.last() - pystreamv.GLOBAL.time) > 10).every(10 * pystreamv.s)
 
-closer_async = distance_async < 0.01
-
-# add implicit existential syntax on the streams
-new_intruder = intruder_lat & intruder_lon
-incoming_data = (intruder_lat & intruder_lon) | (lat & lon)
-
-stale = pystreamv.triggers_forall(
-    new_intruder, 
-    not intruder_lat,
-    [0,10]
+dist = geopy.distance.geodesic(  # type: ignore
+    (self.lat, self.lon),
+    (intruder.lat, intruder.lon)
 )
 
-detect_intruder = pystreamv.triggers_forall(
-    incoming_data,
-    closer_async,
-    [0,10]
-)
+output = pystreamv.H(5 * pystreamv.s, dist[-1] < dist[-2])
 
-idle = pystreamv.State(
-    root = True,
-    enter = stale,
-    eval = True,
-    exit = new_intruder
-)
+multiplex_formula = pystreamv.multiplex_id(output, id_from=intruder.id, eos_from=stale)
 
-follow_intruder = pystreamv.State(
-    enter = new_intruder,
-    eval = detect_intruder,
-    exit = stale
-)
 
 
